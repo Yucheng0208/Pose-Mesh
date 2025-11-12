@@ -351,13 +351,16 @@ class SignLanguageDetector:
         return video_filepath
 
     def process_video_directory(self, video_dir: Union[str, Path], display: bool = False) -> List[str]:
-        video_dir = Path(video_dir)
+        video_dir = Path(video_dir).resolve()
         if not video_dir.exists() or not video_dir.is_dir():
             print(f"錯誤: 找不到影片資料夾 {video_dir}")
             return []
 
         supported_exts = {".mp4", ".mov", ".avi", ".mkv", ".mpg", ".mpeg"}
-        video_paths = sorted([p for p in video_dir.iterdir() if p.suffix.lower() in supported_exts])
+        video_paths = sorted(
+            [p for p in video_dir.rglob("*") if p.is_file() and p.suffix.lower() in supported_exts],
+            key=lambda p: (str(p.parent).lower(), p.name.lower())
+        )
 
         if not video_paths:
             print(f"警告: 在 {video_dir} 中未找到支援的影片檔案 ({', '.join(sorted(supported_exts))})")
@@ -365,7 +368,8 @@ class SignLanguageDetector:
 
         saved_videos = []
         for idx, vp in enumerate(video_paths, start=1):
-            print(f"\n🔄 ({idx}/{len(video_paths)}) 開始處理: {vp.name}")
+            rel_path = vp.relative_to(video_dir)
+            print(f"\n🔄 ({idx}/{len(video_paths)}) 開始處理: {rel_path}")
             output_path = self.process_video(vp, display=display)
             if output_path:
                 saved_videos.append(output_path)
