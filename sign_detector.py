@@ -64,7 +64,8 @@ class SignLanguageDetector:
         
         self.current_roi_coords = {'face': None}
         self.frame_counter = 0
-        self.base_output_dir = base_output_dir
+        self.base_output_dir = Path(base_output_dir)
+        self.base_output_dir.mkdir(parents=True, exist_ok=True)
         self.output_json_dir = None
         
     def extract_face_roi_from_pose(self, image: np.ndarray, pose_keypoints: np.ndarray, person_id: int) -> Optional[np.ndarray]:
@@ -123,9 +124,46 @@ class SignLanguageDetector:
 
         if self.output_json_dir:
             filename = f"{self.frame_counter:012d}.json"
-            filepath = os.path.join(self.output_json_dir, filename)
+            filepath = Path(self.output_json_dir) / filename
             with open(filepath, 'w') as f:
                 json.dump(frame_json_data, f, indent=4, cls=NpEncoder)
+
+    def _sanitize_run_name(self, name: str) -> str:
+        safe = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in name)
+        return safe or "run"
+
+    def _prepare_output_paths(self, run_name: str) -> Tuple[str, str, str]:
+        timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
+        safe_name = self._sanitize_run_name(run_name)
+        run_id = f"{safe_name}_{timestamp}"
+
+        video_dir = self.base_output_dir / "media"
+        json_dir = self.base_output_dir / "json" / run_id
+        video_dir.mkdir(parents=True, exist_ok=True)
+        json_dir.mkdir(parents=True, exist_ok=True)
+
+        video_filepath = str((video_dir / f"{run_id}.mp4").resolve())
+        self.output_json_dir = str(json_dir.resolve())
+        return video_filepath, self.output_json_dir, run_id
+
+    def annotate_frame(self, frame: np.ndarray, keypoints: Dict, num_persons: int, real_fps: Optional[float] = None) -> np.ndarray:
+        if real_fps is not None:
+            cv2.putText(frame, f"Real FPS: {real_fps:.1f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+
+        h, w, _ = frame.shape
+        cv2.putText(frame, f"Persons: {num_persons}", (w - 150, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+
+        status_y = 70
+        status_info = [("Pose", keypoints['pose'] is not None),
+                       ("L_Hand", keypoints['hands']['left'] is not None),
+                       ("R_Hand", keypoints['hands']['right'] is not None),
+                       ("Face", keypoints['face'] is not None)]
+        for name, detected in status_info:
+            text, color = (f"{name}: OK", (0, 255, 0)) if detected else (f"{name}: X", (0, 0, 255))
+            cv2.putText(frame, text, (10, status_y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
+            status_y += 30
+
+        return frame
 
     def process_frame(self, frame: np.ndarray) -> Tuple[np.ndarray, Dict, int]:
         h, w, _ = frame.shape
@@ -219,14 +257,8 @@ class SignLanguageDetector:
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
         
-        timestamp = time.strftime("%Y-%m-%d_%H-%M-%S")
-        
-        video_dir = os.path.join(self.base_output_dir, "media")
-        os.makedirs(video_dir, exist_ok=True)
-        video_filepath = os.path.join(video_dir, f"{timestamp}.mp4")
-        
-        self.output_json_dir = os.path.join(self.base_output_dir, "json", timestamp)
-        os.makedirs(self.output_json_dir, exist_ok=True)
+        self.frame_counter = 0
+        video_filepath, json_dir, run_id = self._prepare_output_paths(f"realtime_cam{camera_id}")
         
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -235,7 +267,7 @@ class SignLanguageDetector:
         out = cv2.VideoWriter(video_filepath, fourcc, fps, (width, height))
         
         print(f"✅ 將自動錄製影片至: {video_filepath}")
-        print(f"✅ JSON檔案將儲存於: {self.output_json_dir}")
+        print(f"✅ JSON檔案將儲存於: {json_dir}")
         print("即時手語識別已啟動，按 'Esc' 鍵退出")
         
         prev_time = 0
@@ -249,20 +281,7 @@ class SignLanguageDetector:
                 current_time = time.time()
                 real_fps = 1 / (current_time - prev_time) if (current_time - prev_time) > 0 else 0
                 prev_time = current_time
-                cv2.putText(processed_frame, f"Real FPS: {real_fps:.1f}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-                
-                h, w, _ = processed_frame.shape
-                cv2.putText(processed_frame, f"Persons: {num_persons}", (w - 150, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
-
-                status_y = 70
-                status_info = [("Pose", keypoints['pose'] is not None),
-                               ("L_Hand", keypoints['hands']['left'] is not None),
-                               ("R_Hand", keypoints['hands']['right'] is not None),
-                               ("Face", keypoints['face'] is not None)]
-                for name, detected in status_info:
-                    text, color = (f"{name}: OK", (0, 255, 0)) if detected else (f"{name}: X", (0, 0, 255))
-                    cv2.putText(processed_frame, text, (10, status_y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-                    status_y += 30
+                processed_frame = self.annotate_frame(processed_frame, keypoints, num_persons, real_fps=real_fps)
 
                 cv2.imshow('Sign Language Detection', processed_frame)
                 out.write(processed_frame)
@@ -274,7 +293,90 @@ class SignLanguageDetector:
             out.release()
             cv2.destroyAllWindows()
             print(f"\n✅ 影片已成功儲存至: {video_filepath}")
-            print(f"✅ JSON檔案已儲存於: {self.output_json_dir}")
+            print(f"✅ JSON檔案已儲存於: {json_dir}")
+            self.output_json_dir = None
+
+    def process_video(self, video_path: Union[str, Path], display: bool = False) -> Optional[str]:
+        video_path = Path(video_path)
+        if not video_path.exists():
+            print(f"錯誤: 找不到影片檔案 {video_path}")
+            return None
+
+        cap = cv2.VideoCapture(str(video_path))
+        if not cap.isOpened():
+            print(f"錯誤: 無法開啟影片 {video_path}")
+            return None
+
+        self.frame_counter = 0
+        video_filepath, json_dir, run_id = self._prepare_output_paths(video_path.stem)
+
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        if not fps or np.isnan(fps):
+            fps = 30
+
+        ret, frame = cap.read()
+        if not ret:
+            print(f"錯誤: 無法讀取影片內容 {video_path}")
+            cap.release()
+            return None
+
+        height, width = frame.shape[:2]
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(video_filepath, fourcc, fps, (width, height))
+
+        window_name = f'Sign Language Detection - {video_path.name}'
+        try:
+            while ret:
+                processed_frame, keypoints, num_persons = self.process_frame(frame)
+                processed_frame = self.annotate_frame(processed_frame, keypoints, num_persons)
+
+                out.write(processed_frame)
+
+                if display:
+                    cv2.imshow(window_name, processed_frame)
+                    if cv2.waitKey(1) & 0xFF == 27:
+                        print("收到 ESC 指令，提前結束影片處理")
+                        break
+
+                ret, frame = cap.read()
+        finally:
+            cap.release()
+            out.release()
+            if display:
+                cv2.destroyAllWindows()
+
+        print(f"✅ 影片已成功儲存至: {video_filepath}")
+        print(f"✅ JSON檔案已儲存於: {json_dir}")
+        self.output_json_dir = None
+        return video_filepath
+
+    def process_video_directory(self, video_dir: Union[str, Path], display: bool = False) -> List[str]:
+        video_dir = Path(video_dir).resolve()
+        if not video_dir.exists() or not video_dir.is_dir():
+            print(f"錯誤: 找不到影片資料夾 {video_dir}")
+            return []
+
+        supported_exts = {".mp4", ".mov", ".avi", ".mkv", ".mpg", ".mpeg"}
+        video_paths = sorted(
+            [p for p in video_dir.rglob("*") if p.is_file() and p.suffix.lower() in supported_exts],
+            key=lambda p: (str(p.parent).lower(), p.name.lower())
+        )
+
+        if not video_paths:
+            print(f"警告: 在 {video_dir} 中未找到支援的影片檔案 ({', '.join(sorted(supported_exts))})")
+            return []
+
+        saved_videos = []
+        for idx, vp in enumerate(video_paths, start=1):
+            rel_path = vp.relative_to(video_dir)
+            print(f"\n🔄 ({idx}/{len(video_paths)}) 開始處理: {rel_path}")
+            output_path = self.process_video(vp, display=display)
+            if output_path:
+                saved_videos.append(output_path)
+
+        if saved_videos:
+            print(f"\n✅ 完成處理 {len(saved_videos)} 部影片，輸出皆儲存於 `outputs/media/` 與對應 JSON 資料夾。")
+        return saved_videos
 
 def main():
     parser = argparse.ArgumentParser(description='手語識別系統')
@@ -285,6 +387,9 @@ def main():
     parser.add_argument('--face_model', type=str, default='models/face_landmarker.task')
     parser.add_argument('--device', type=str, default='cuda')
     parser.add_argument('--confidence', type=float, default=0.5)
+    parser.add_argument('--input', type=str, help='輸入影片路徑 (video 模式)')
+    parser.add_argument('--show', action='store_true', help='處理時顯示視窗')
+    parser.add_argument('--input_dir', type=str, default='video', help='輸入影片資料夾 (video 模式，預設: video)')
     
     args = parser.parse_args()
     
@@ -304,6 +409,11 @@ def main():
     
     if args.mode == 'realtime':
         detector.process_realtime(args.camera)
+    elif args.mode == 'video':
+        if args.input:
+            detector.process_video(args.input, display=args.show)
+        else:
+            detector.process_video_directory(args.input_dir, display=args.show)
 
 if __name__ == "__main__":
     main()
