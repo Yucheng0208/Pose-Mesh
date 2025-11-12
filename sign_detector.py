@@ -350,6 +350,30 @@ class SignLanguageDetector:
         self.output_json_dir = None
         return video_filepath
 
+    def process_video_directory(self, video_dir: Union[str, Path], display: bool = False) -> List[str]:
+        video_dir = Path(video_dir)
+        if not video_dir.exists() or not video_dir.is_dir():
+            print(f"錯誤: 找不到影片資料夾 {video_dir}")
+            return []
+
+        supported_exts = {".mp4", ".mov", ".avi", ".mkv", ".mpg", ".mpeg"}
+        video_paths = sorted([p for p in video_dir.iterdir() if p.suffix.lower() in supported_exts])
+
+        if not video_paths:
+            print(f"警告: 在 {video_dir} 中未找到支援的影片檔案 ({', '.join(sorted(supported_exts))})")
+            return []
+
+        saved_videos = []
+        for idx, vp in enumerate(video_paths, start=1):
+            print(f"\n🔄 ({idx}/{len(video_paths)}) 開始處理: {vp.name}")
+            output_path = self.process_video(vp, display=display)
+            if output_path:
+                saved_videos.append(output_path)
+
+        if saved_videos:
+            print(f"\n✅ 完成處理 {len(saved_videos)} 部影片，輸出皆儲存於 `outputs/media/` 與對應 JSON 資料夾。")
+        return saved_videos
+
 def main():
     parser = argparse.ArgumentParser(description='手語識別系統')
     parser.add_argument('--mode', choices=['image', 'video', 'realtime'], default='realtime')
@@ -361,6 +385,7 @@ def main():
     parser.add_argument('--confidence', type=float, default=0.5)
     parser.add_argument('--input', type=str, help='輸入影片路徑 (video 模式)')
     parser.add_argument('--show', action='store_true', help='處理時顯示視窗')
+    parser.add_argument('--input_dir', type=str, default='video', help='輸入影片資料夾 (video 模式，預設: video)')
     
     args = parser.parse_args()
     
@@ -381,10 +406,10 @@ def main():
     if args.mode == 'realtime':
         detector.process_realtime(args.camera)
     elif args.mode == 'video':
-        if not args.input:
-            print("錯誤: 使用 video 模式時，必須提供 --input 影片路徑")
-            return
-        detector.process_video(args.input, display=args.show)
+        if args.input:
+            detector.process_video(args.input, display=args.show)
+        else:
+            detector.process_video_directory(args.input_dir, display=args.show)
 
 if __name__ == "__main__":
     main()
