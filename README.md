@@ -106,6 +106,51 @@ python main.py --mode realtime
     python main.py --device cpu
     ```
 
+## Sign Language Classification (TCN + xLSTM)
+
+The repository now also includes a training-ready classification stack that follows the architecture you described:
+
+```
+RGB Frames → Pose/Hand/Face Keypoints → stream-wise Normalization → Dilated TCN Encoders (k=3, dilation 1|2|4) → Concatenation + Linear Projection → xLSTM stack (mLSTM or sLSTM) → Temporal Attention Pooling → Classification Head
+```
+
+Key components live in the `slr/` package:
+
+- `slr/data.py`: Loads per-frame JSON exports (537 landmarks) into synchronized pose/hand/face sequences with padding-aware collate logic.
+- `slr/model.py`: Implements the multi-stream TCN encoders, fusion projector, configurable xLSTM stack, attention pooling, and classification head.
+- `slr/train.py`: End-to-end training script with AdamW, optional cosine scheduler, gradient clipping, checkpointing, and JSONL logging.
+
+### Preparing data
+
+1. Run the capture pipeline (e.g., `sign_detector.py`) to produce JSON folders per recording.
+2. Create a `metadata.csv` with at least `sample_id,label` columns (optionally `split` for predefined train/val splits). `sample_id` must match the folder name under your JSON root.
+
+### Training
+
+```bash
+python -m slr.train \
+  --metadata data/metadata.csv \
+  --json-root data/json_sequences \
+  --output-dir experiments/xlstm_baseline \
+  --epochs 40 \
+  --batch-size 8 \
+  --max-seq-len 96 \
+  --stream-hidden 256 \
+  --fusion-dim 512 \
+  --xlstm-hidden 512 \
+  --xlstm-layers 2 \
+  --xlstm-variant mlstm
+```
+
+Important flags:
+
+- `--train-split` / `--val-split`: Use when `metadata.csv` already contains a `split` column (e.g., `train`, `val`).
+- `--val-ratio`: Randomly carve out a validation subset when no split column exists (default 10%).
+- `--no-random-clip`: Disable random temporal crops if you prefer deterministic sequences (useful for evaluation).
+- `--cache`: Keep decoded sequences in RAM for faster epochs on datasets that fit memory.
+
+Checkpoints (`checkpoint.pt`, `best.pt`) and a streaming `metrics.jsonl` log are written under `--output-dir`.
+
 ## Output JSON Data Structure
 
 A JSON file is generated for every frame, with a clear data structure for easy parsing and use.
