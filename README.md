@@ -150,6 +150,48 @@ A JSON file is generated for every frame, with a clear data structure for easy p
               - **`x`, `y`**: Absolute pixel coordinates in the original image frame.
               - **`confidence`**: Confidence score for the landmark.
 
+## Multi-Stream Sign Classification (TCN + xLSTM)
+
+Once landmark sequences are produced, the `sign_classifier.py` module provides a trainable classifier that matches the flow you described:
+
+1. **Per-stream Normalization + Temporal Convolution**  
+   Body, hand, and face sequences each pass through independent normalization and TCN encoders (kernel size 3, dilations 1/2/4) to capture short- and mid-range motion.
+2. **Feature Fusion**  
+   Encoded features are concatenated and linearly projected to create a fused representation of the signer state at every timestep.
+3. **xLSTM Stack**  
+   One or more xLSTM layers (multiplicative LSTM by default, switchable to stacked LSTM) provide long-term temporal reasoning. Optional bidirectionality is available on the sLSTM variant.
+4. **Temporal Attention Pooling**  
+   A lightweight attention pooling compresses the full sequence into a single context vector.
+5. **Classification Head**  
+   A final layer-normalized MLP produces logits for gloss/sign labels.
+
+### Quick Start
+
+```python
+import torch
+from sign_classifier import build_default_classifier
+
+model = build_default_classifier(
+    num_body_joints=17,
+    num_hand_joints=42,   # 21 per hand
+    num_face_joints=478,
+    num_classes=200,      # adjust to your vocabulary size
+)
+
+batch_size, time_steps = 4, 64
+inputs = {
+    "body": torch.randn(batch_size, time_steps, 17 * 3),
+    "hand": torch.randn(batch_size, time_steps, 42 * 3),
+    "face": torch.randn(batch_size, time_steps, 478 * 3),
+}
+
+outputs = model(inputs, return_attention=True)
+logits = outputs["logits"]     # [B, num_classes]
+attention = outputs["attention_weights"]  # optional visualization
+```
+
+Feed the flattened `(x, y, confidence)` values from the JSON files into the corresponding tensors before training. You can swap the xLSTM variant by passing `xlstm_config=XlstmConfig(variant="slstm", bidirectional=True)` when building the classifier.
+
 ## Contributing
 
 Contributions in any form are welcome\! Reporting issues, requesting new features, or submitting Pull Requests are all greatly helpful to this project.
