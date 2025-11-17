@@ -192,9 +192,51 @@ attention = outputs["attention_weights"]  # optional visualization
 
 Feed the flattened `(x, y, confidence)` values from the JSON files into the corresponding tensors before training. You can swap the xLSTM variant by passing `xlstm_config=XlstmConfig(variant="slstm", bidirectional=True)` when building the classifier.
 
+### Training, Evaluation, and Running Inference
+
+Use `sign_classifier_runner.py` for complete workflows.
+
+1. Create a manifest JSON; each entry references NumPy arrays (shape `[T, F]`) for body, hand, and face streams and can optionally include a label:
+   ```json
+   [
+     {
+       "id": "sample-0001",
+       "body": "sequences/sample-0001_body.npy",
+       "hand": "sequences/sample-0001_hand.npy",
+       "face": "sequences/sample-0001_face.npy",
+       "label": "hello"
+     }
+   ]
+   ```
+2. Run the desired mode:
+   - **Train (with optional validation split)**  
+     ```bash
+     python sign_classifier_runner.py \
+         --mode train \
+         --manifest data/train_manifest.json \
+         --val_manifest data/val_manifest.json \
+         --save_dir checkpoints/slr
+     ```
+   - **Evaluate a checkpoint**  
+     ```bash
+     python sign_classifier_runner.py \
+         --mode eval \
+         --manifest data/test_manifest.json \
+         --checkpoint checkpoints/slr/best_classifier.pt
+     ```
+   - **Run inference / deployment**  
+     ```bash
+     python sign_classifier_runner.py \
+         --mode predict \
+         --manifest data/live_manifest.json \
+         --checkpoint checkpoints/slr/best_classifier.pt \
+         --top_k 3 \
+         --output_path outputs/predictions.json
+     ```
+
 ## Contributing
 
-Contributions in any form are welcome\! Reporting issues, requesting new features, or submitting Pull Requests are all greatly helpful to this project.
+Contributions in any form are welcome! Reporting issues, requesting new features, or submitting Pull Requests are all greatly helpful to this project.
 
 ## License
 
