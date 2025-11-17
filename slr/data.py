@@ -35,6 +35,113 @@ def _load_json(path: Path) -> Dict:
         return json.load(f)
 
 
+def _decode_sequence(
+    frame_paths: List[Path],
+    pose_points: int,
+    hand_points: int,
+    face_points: int,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    pose_frames: List[np.ndarray] = []
+    hand_frames: List[np.ndarray] = []
+    face_frames: List[np.ndarray] = []
+    valid_mask: List[float] = []
+
+    half_hand = hand_points // 2
+
+    for frame_path in frame_paths:
+        frame = _load_json(frame_path)
+        persons = frame.get("persons", [])
+        if not persons:
+            pose_frames.append(np.zeros((pose_points, 3), dtype=np.float32))
+            hand_frames.append(np.zeros((hand_points, 3), dtype=np.float32))
+            face_frames.append(np.zeros((face_points, 3), dtype=np.float32))
+            valid_mask.append(0.0)
+            continue
+
+        person = persons[0]
+        keypoints: Dict[str, List[Dict]] = person.get("keypoints", {})
+        pose_frames.append(_extract_landmarks(keypoints.get("pose", []), pose_points))
+
+        left = _extract_landmarks(keypoints.get("left_hand", []), half_hand)
+        right = _extract_landmarks(keypoints.get("right_hand", []), half_hand)
+        hands = np.concatenate([left, right], axis=0)
+        hand_frames.append(hands)
+
+        face_frames.append(_extract_landmarks(keypoints.get("face", []), face_points))
+        valid_mask.append(1.0)
+
+    pose_seq = np.stack(pose_frames, axis=0)
+    hand_seq = np.stack(hand_frames, axis=0)
+    face_seq = np.stack(face_frames, axis=0)
+    mask = np.array(valid_mask, dtype=np.float32)
+    return pose_seq, hand_seq, face_seq, mask
+
+
+def _clip_sequences(
+    pose_seq: np.ndarray,
+    hand_seq: np.ndarray,
+    face_seq: np.ndarray,
+    mask: np.ndarray,
+    max_seq_len: Optional[int],
+    random_clip: bool,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    if max_seq_len is None or pose_seq.shape[0] <= max_seq_len:
+        return pose_seq, hand_seq, face_seq, mask
+
+    start = 0
+    total = pose_seq.shape[0]
+    if random_clip:
+        start = np.random.randint(0, total - max_seq_len + 1)
+    else:
+        start = total - max_seq_len
+    end = start + max_seq_len
+    return (
+        pose_seq[start:end],
+        hand_seq[start:end],
+        face_seq[start:end],
+        mask[start:end],
+    )
+
+
+def _tensorize_sequences(
+    pose_seq: np.ndarray,
+    hand_seq: np.ndarray,
+    face_seq: np.ndarray,
+    mask: np.ndarray,
+) -> Dict[str, torch.Tensor]:
+    pose_tensor = torch.from_numpy(pose_seq.reshape(pose_seq.shape[0], -1))
+    hand_tensor = torch.from_numpy(hand_seq.reshape(hand_seq.shape[0], -1))
+    face_tensor = torch.from_numpy(face_seq.reshape(face_seq.shape[0], -1))
+    mask_tensor = torch.from_numpy(mask)
+    return {
+        "pose": pose_tensor,
+        "hand": hand_tensor,
+        "face": face_tensor,
+        "mask": mask_tensor,
+    }
+
+
+def load_sequence_from_dir(
+    json_dir: str | Path,
+    pose_points: int = 17,
+    hand_points: int = 42,
+    face_points: int = 478,
+    max_seq_len: Optional[int] = None,
+    min_seq_len: int = 1,
+    random_clip: bool = False,
+) -> Dict[str, torch.Tensor]:
+    dir_path = Path(json_dir)
+    frame_paths = sorted(dir_path.glob("*.json"))
+    if len(frame_paths) < min_seq_len:
+        raise ValueError(f"Sequence at {dir_path} has {len(frame_paths)} frames < min_seq_len={min_seq_len}")
+
+    pose_seq, hand_seq, face_seq, mask = _decode_sequence(frame_paths, pose_points, hand_points, face_points)
+    pose_seq, hand_seq, face_seq, mask = _clip_sequences(
+        pose_seq, hand_seq, face_seq, mask, max_seq_len=max_seq_len, random_clip=random_clip
+    )
+    return _tensorize_sequences(pose_seq, hand_seq, face_seq, mask)
+
+
 @dataclass
 class SequenceSample:
     sample_id: str
@@ -147,59 +254,21 @@ class SignSequenceDataset(Dataset):
                 f"Sample '{sample.sample_id}' has {len(frame_paths)} frames but min_seq_len={self.min_seq_len}"
             )
 
-        pose_frames: List[np.ndarray] = []
-        hand_frames: List[np.ndarray] = []
-        face_frames: List[np.ndarray] = []
-        valid_mask: List[float] = []
-
-        for frame_path in frame_paths:
-            frame = _load_json(frame_path)
-            persons = frame.get("persons", [])
-            if not persons:
-                pose_frames.append(np.zeros((self.pose_points, 3), dtype=np.float32))
-                hand_frames.append(np.zeros((self.hand_points, 3), dtype=np.float32))
-                face_frames.append(np.zeros((self.face_points, 3), dtype=np.float32))
-                valid_mask.append(0.0)
-                continue
-
-            person = persons[0]
-            keypoints: Dict[str, List[Dict]] = person.get("keypoints", {})
-            pose_frames.append(_extract_landmarks(keypoints.get("pose", []), self.pose_points))
-
-            left = _extract_landmarks(keypoints.get("left_hand", []), self.hand_points // 2)
-            right = _extract_landmarks(keypoints.get("right_hand", []), self.hand_points // 2)
-            hands = np.concatenate([left, right], axis=0)
-            hand_frames.append(hands)
-
-            face_frames.append(_extract_landmarks(keypoints.get("face", []), self.face_points))
-            valid_mask.append(1.0)
-
-        pose_seq = np.stack(pose_frames, axis=0)  # (T, P, 3)
-        hand_seq = np.stack(hand_frames, axis=0)  # (T, H, 3)
-        face_seq = np.stack(face_frames, axis=0)  # (T, F, 3)
-        mask = np.array(valid_mask, dtype=np.float32)  # (T,)
-
-        if self.max_seq_len is not None and pose_seq.shape[0] > self.max_seq_len:
-            start = 0
-            if self.random_clip:
-                start = np.random.randint(0, pose_seq.shape[0] - self.max_seq_len + 1)
-            end = start + self.max_seq_len
-            pose_seq = pose_seq[start:end]
-            hand_seq = hand_seq[start:end]
-            face_seq = face_seq[start:end]
-            mask = mask[start:end]
-
-        pose_tensor = torch.from_numpy(pose_seq.reshape(pose_seq.shape[0], -1))
-        hand_tensor = torch.from_numpy(hand_seq.reshape(hand_seq.shape[0], -1))
-        face_tensor = torch.from_numpy(face_seq.reshape(face_seq.shape[0], -1))
-        mask_tensor = torch.from_numpy(mask)
-
-        return {
-            "pose": pose_tensor,
-            "hand": hand_tensor,
-            "face": face_tensor,
-            "mask": mask_tensor,
-        }
+        pose_seq, hand_seq, face_seq, mask = _decode_sequence(
+            frame_paths,
+            pose_points=self.pose_points,
+            hand_points=self.hand_points,
+            face_points=self.face_points,
+        )
+        pose_seq, hand_seq, face_seq, mask = _clip_sequences(
+            pose_seq,
+            hand_seq,
+            face_seq,
+            mask,
+            max_seq_len=self.max_seq_len,
+            random_clip=self.random_clip,
+        )
+        return _tensorize_sequences(pose_seq, hand_seq, face_seq, mask)
 
 
 def sign_sequence_collate(batch: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:

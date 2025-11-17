@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from dataclasses import asdict
 from pathlib import Path
 from typing import Dict
 
@@ -231,6 +232,17 @@ def main():
         hand_dim=train_dataset.hand_points * 3,
         face_dim=train_dataset.face_points * 3,
     )
+    config_path = output_dir / "config.json"
+    with config_path.open("w", encoding="utf-8") as f:
+        json.dump(asdict(config), f, indent=2)
+
+    labels_path = output_dir / "labels.json"
+    label_list = [None] * num_classes
+    for label, idx in label_mapping.items():
+        label_list[idx] = str(label)
+    with labels_path.open("w", encoding="utf-8") as f:
+        json.dump({"labels": label_list}, f, indent=2, ensure_ascii=False)
+
     model = SignLanguageXLSTM(config).to(args.device)
 
     criterion = nn.CrossEntropyLoss()

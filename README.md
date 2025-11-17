@@ -151,6 +151,34 @@ Important flags:
 
 Checkpoints (`checkpoint.pt`, `best.pt`) and a streaming `metrics.jsonl` log are written under `--output-dir`.
 
+### Evaluation / Testing
+
+Use the dedicated evaluator to score a saved checkpoint on any metadata split or explicit list of sample IDs:
+
+```bash
+python -m slr.eval \
+  --metadata data/metadata.csv \
+  --json-root data/json_sequences \
+  --checkpoint experiments/xlstm_baseline/best.pt \
+  --split val \
+  --batch-size 8
+```
+
+If `config.json` or `labels.json` live outside the checkpoint directory, point to them with `--config` / `--labels`.
+
+### Runtime Inference
+
+After collecting a new clip with `sign_detector.py` (each clip is a folder of numbered JSON frames), run classification directly:
+
+```bash
+python -m slr.run \
+  --checkpoint experiments/xlstm_baseline/best.pt \
+  --inputs outputs/json/2025-01-01_12-00-00 \
+  --top-k 5
+```
+
+Pass multiple `--inputs` to batch classify several recordings. The script automatically loads `config.json` and `labels.json` from the checkpoint directory (or override with `--config` / `--labels`) and prints the Top-K label probabilities for each sequence.
+
 ## Output JSON Data Structure
 
 A JSON file is generated for every frame, with a clear data structure for easy parsing and use.
